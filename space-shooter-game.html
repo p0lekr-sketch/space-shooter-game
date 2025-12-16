@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Space Shooter - Gra strzelanka kosmiczna z power-upami i sklepem">
+    <title>Space Shooter - Gra Online</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow-x: hidden;
+        }
+        
+        /* Zapobiegaj scrollowaniu podczas gry */
+        .game-container {
+            touch-action: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        
+        /* Animacje */
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .animate-pulse-slow {
+            animation: pulse 2s ease-in-out infinite;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const SpaceShooterGame = () => {
+          const canvasRef = useRef(null);
+          const [gameState, setGameState] = useState('menu');
+          const [score, setScore] = useState(0);
+          const [level, setLevel] = useState(1);
+          const [health, setHealth] = useState(100);
+          const [playerName, setPlayerName] = useState('');
+          const [totalPoints, setTotalPoints] = useState(0);
+          const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
+          
+          const [inventory, setInventory] = useState({
+            flamethrower: 0,
+            timeFreeze: 0,
+            piercing: 0,
+            helpers: 0
+          });
+          
+          const gameRef = useRef({
+            player: { x: 375, y: 520, width: 50, height: 40, speed: 5 },
+            bullets: [],
+            enemies: [],
+            enemyBombs: [],
+            powerUps: [],
+            wave: 0,
+            keys: {},
+            lastShot: 0,
+            lastEnemyShot: 0,
+            waveCleared: false,
+            activePowerUp: null,
+            powerUpEndTime: 0,
+            flamethrowerCooldown: 0,
+            timeFreezeActive: false,
+            timeFreezeEnd: 0,
+            piercingActive: false,
+            piercingEnd: 0,
+            helpersActive: false,
+            helpersEnd: 0,
+            lastHelperShot: 0,
+            touchControls: { left: false, right: false, shoot: false }
+          });
+
+          useEffect(() => {
+            const updateCanvasSize = () => {
+              const maxWidth = Math.min(window.innerWidth - 40, 800);
+              const maxHeight = window.innerHeight - 300;
+              const aspectRatio = 4 / 3;
+              
+              let width = maxWidth;
+              let height = width / aspectRatio;
+              
+              if (height > maxHeight) {
+                height = maxHeight;
+                width = height * aspectRatio;
+              }
+              
+              setCanvasSize({ width: Math.floor(width), height: Math.floor(height) });
+            };
+            
+            updateCanvasSize();
+            window.addEventListener('resize', updateCanvasSize);
+            return () => window.removeEventListener('resize', updateCanvasSize);
+          }, []);
+
+          useEffect(() => {
+            if (gameState !== 'playing') return;
+
+            const canvas = canvasRef.current;
+            const ctx = canvas.getContext('2d');
+            const game = gameRef.current;
+            
+            const scaleX = canvasSize.width / 800;
+            const scaleY = canvasSize.height / 600;
+            game.player.x = game.player.x * scaleX;
+            game.player.y = Math.max(canvasSize.height - 80, game.player.y * scaleY);
+
+            const handleKeyDown = (e) => {
+              if (['ArrowLeft', 'ArrowRight', ' ', 'f', 'F', '1', '2', '3', '4'].includes(e.key)) {
+                e.preventDefault();
+              }
+              game.keys[e.key.toLowerCase()] = true;
+              
+              const now = Date.now();
+              if (e.key === '1' && inventory.timeFreeze > 0 && !game.timeFreezeActive) {
+                activateSuperPower('timeFreeze');
+              } else if (e.key === '2' && inventory.piercing > 0 && !game.piercingActive) {
+                activateSuperPower('piercing');
+              } else if (e.key === '3' && inventory.helpers > 0 && !game.helpersActive) {
+                activateSuperPower('helpers');
+              }
+            };
+
+            const handleKeyUp = (e) => {
+              game.keys[e.key.toLowerCase()] = false;
+            };
+
+            window.addEventListener('keydown', handleKeyDown);
+            window.addEventListener('keyup', handleKeyUp);
+
+            const createEnemyWave = () => {
+              game.enemies = [];
+              const rows = 2 + Math.floor(game.wave / 3);
+              const cols = Math.min(4 + game.wave, 10);
+              const spacing = Math.max(canvasSize.width / 15, canvasSize.width / 13 - game.wave * 2);
+              const enemySize = Math.max(canvasSize.width / 32, canvasSize.width / 20 - game.wave);
+              const startX = (canvasSize.width - (cols * spacing)) / 2;
+              
+              for (let row = 0; row < rows; row++) {
+                for (let col = 0; col < cols; col++) {
+                  game.enemies.push({
+                    x: startX + col * spacing,
+                    y: 50 + row * 60,
+                    width: enemySize,
+                    height: enemySize,
+                    speedX: 2 + game.wave * 0.3,
+                    direction: 1
+                  });
+                }
+              }
+            };
+
+            createEnemyWave();
+
+            const gameLoop = () => {
+              const now = Date.now();
+              
+              ctx.fillStyle = '#0a0a1a';
+              ctx.fillRect(0, 0, canvasSize.width, canvasSize.height);
+
+              ctx.fillStyle = '#ffffff';
+              for (let i = 0; i < 50; i++) {
+                const x = (i * 157) % canvasSize.width;
+                const y = (i * 211) % canvasSize.height;
+                ctx.fillRect(x, y, 2, 2);
+              }
+
+              if (game.activePowerUp && now > game.powerUpEndTime) {
+                game.activePowerUp = null;
+                game.player.speed = 5;
+              }
+              
+              if (game.timeFreezeActive && now > game.timeFreezeEnd) {
+                game.timeFreezeActive = false;
+              }
+              
+              if (game.piercingActive && now > game.piercingEnd) {
+                game.piercingActive = false;
+              }
+              
+              if (game.helpersActive && now > game.helpersEnd) {
+                game.helpersActive = false;
+              }
+
+              if ((game.keys['f'] || game.touchControls.flamethrower) && now > game.flamethrowerCooldown && inventory.flamethrower > 0) {
+                const enemiesDestroyed = game.enemies.length;
+                game.enemies = [];
+                setScore(s => s + enemiesDestroyed * 10);
+                game.flamethrowerCooldown = now + 15000;
+                setInventory(inv => ({ ...inv, flamethrower: inv.flamethrower - 1 }));
+                game.touchControls.flamethrower = false;
+              }
+
+              if ((game.keys['arrowleft'] || game.touchControls.left) && game.player.x > 0) {
+                game.player.x -= game.player.speed;
+              }
+              if ((game.keys['arrowright'] || game.touchControls.right) && game.player.x < canvasSize.width - game.player.width) {
+                game.player.x += game.player.speed;
+              }
+
+              const shootDelay = 300;
+              if ((game.keys[' '] || game.touchControls.shoot) && now - game.lastShot > shootDelay) {
+                if (game.piercingActive) {
+                  for (let i = -1; i <= 1; i++) {
+                    game.bullets.push({
+                      x: game.player.x + game.player.width / 2 - 3 + i * 20,
+                      y: game.player.y,
+                      width: 6,
+                      height: 20,
+                      speed: 8,
+                      type: 'piercing',
+                      dirX: 0
+                    });
+                  }
+                } else if (game.activePowerUp === 'triple') {
+                  game.bullets.push({ x: game.player.x + game.player.width / 2 - 2, y: game.player.y, width: 4, height: 15, speed: 7, type: 'normal', dirX: 0 });
+                  game.bullets.push({ x: game.player.x + game.player.width / 2 - 22, y: game.player.y, width: 4, height: 15, speed: 7, type: 'normal', dirX: -2 });
+                  game.bullets.push({ x: game.player.x + game.player.width / 2 + 18, y: game.player.y, width: 4, height: 15, speed: 7, type: 'normal', dirX: 2 });
+                } else if (game.activePowerUp === 'big') {
+                  game.bullets.push({ x: game.player.x + game.player.width / 2 - 10, y: game.player.y, width: 20, height: 35, speed: 5, type: 'big', hits: 3, dirX: 0 });
+                } else if (game.activePowerUp === 'bounce') {
+                  game.bullets.push({ x: game.player.x + game.player.width / 2 - 3, y: game.player.y, width: 6, height: 18, speed: 7, type: 'bounce', dirX: (Math.random() - 0.5) * 4, lifeTime: now + 5000 });
+                } else {
+                  game.bullets.push({ x: game.player.x + game.player.width / 2 - 2, y: game.player.y, width: 4, height: 15, speed: 7, type: 'normal', dirX: 0 });
+                }
+                game.lastShot = now;
+              }
+              
+              if (game.helpersActive && now - game.lastHelperShot > 400) {
+                game.bullets.push({ x: game.player.x - 40, y: game.player.y + 10, width: 3, height: 12, speed: 8, type: 'helper', dirX: 0 });
+                game.bullets.push({ x: game.player.x + game.player.width + 37, y: game.player.y + 10, width: 3, height: 12, speed: 8, type: 'helper', dirX: 0 });
+                game.lastHelperShot = now;
+              }
+
+              ctx.fillStyle = '#00ff88';
+              ctx.beginPath();
+              ctx.moveTo(game.player.x + game.player.width / 2, game.player.y);
+              ctx.lineTo(game.player.x, game.player.y + game.player.height);
+              ctx.lineTo(game.player.x + game.player.width, game.player.y + game.player.height);
+              ctx.closePath();
+              ctx.fill();
+              
+              if (game.helpersActive) {
+                ctx.fillStyle = '#00ddff';
+                ctx.beginPath();
+                ctx.moveTo(game.player.x - 40, game.player.y + 10);
+                ctx.lineTo(game.player.x - 50, game.player.y + 30);
+                ctx.lineTo(game.player.x - 30, game.player.y + 30);
+                ctx.closePath();
+                ctx.fill();
+                
+                ctx.beginPath();
+                ctx.moveTo(game.player.x + game.player.width + 40, game.player.y + 10);
+                ctx.lineTo(game.player.x + game.player.width + 30, game.player.y + 30);
+                ctx.lineTo(game.player.x + game.player.width + 50, game.player.y + 30);
+                ctx.closePath();
+                ctx.fill();
+              }
+
+              game.bullets = game.bullets.filter(bullet => {
+                bullet.y -= bullet.speed;
+                if (bullet.dirX) bullet.x += bullet.dirX;
+                
+                if (bullet.type === 'bounce') {
+                  if (bullet.y <= 0) { bullet.y = 0; bullet.speed = -bullet.speed; bullet.dirX = (Math.random() - 0.5) * 8; }
+                  if (bullet.y >= canvasSize.height - bullet.height) { bullet.y = canvasSize.height - bullet.height; bullet.speed = -bullet.speed; }
+                  if (bullet.x <= 0) { bullet.x = 0; bullet.dirX = Math.abs(bullet.dirX); }
+                  if (bullet.x >= canvasSize.width - bullet.width) { bullet.x = canvasSize.width - bullet.width; bullet.dirX = -Math.abs(bullet.dirX); }
+                  if (now > bullet.lifeTime) return false;
+                }
+                
+                if (bullet.type === 'big') {
+                  ctx.fillStyle = '#ff00ff';
+                  ctx.fillRect(bullet.x, bullet.y, bullet.width, bullet.height);
+                  ctx.fillStyle = '#ff66ff';
+                  ctx.fillRect(bullet.x + 4, bullet.y + 4, bullet.width - 8, bullet.height - 8);
+                } else if (bullet.type === 'bounce') {
+                  ctx.fillStyle = '#00ffff';
+                  ctx.fillRect(bullet.x, bullet.y, bullet.width, bullet.height);
+                  ctx.fillStyle = '#ffffff';
+                  ctx.fillRect(bullet.x + 1, bullet.y + 1, bullet.width - 2, bullet.height - 2);
+                } else if (bullet.type === 'piercing') {
+                  ctx.fillStyle = '#ff0000';
+                  ctx.fillRect(bullet.x, bullet.y, bullet.width, bullet.height);
+                  ctx.fillStyle = '#ffff00';
+                  ctx.fillRect(bullet.x + 1, bullet.y + 1, bullet.width - 2, bullet.height - 2);
+                } else if (bullet.type === 'helper') {
+                  ctx.fillStyle = '#00ddff';
+                  ctx.fillRect(bullet.x, bullet.y, bullet.width, bullet.height);
+                } else {
+                  ctx.fillStyle = '#ffff00';
+                  ctx.fillRect(bullet.x, bullet.y, bullet.width, bullet.height);
+                }
+                
+                return bullet.type === 'bounce' || bullet.y > -50;
+              });
+
+              if (!game.timeFreezeActive) {
+                let changeDirection = false;
+                game.enemies.forEach(enemy => {
+                  enemy.x += enemy.speedX * enemy.direction;
+                  if (enemy.x <= 0 || enemy.x >= canvasSize.width - enemy.width) changeDirection = true;
+                });
+                if (changeDirection) {
+                  game.enemies.forEach(enemy => { enemy.direction *= -1; enemy.y += 20; });
+                }
+              }
+
+              if (!game.timeFreezeActive && now - game.lastEnemyShot > 1000 && game.enemies.length > 0) {
+                const shooter = game.enemies[Math.floor(Math.random() * game.enemies.length)];
+                game.enemyBombs.push({ x: shooter.x + shooter.width / 2 - 3, y: shooter.y + shooter.height, width: 6, height: 12, speed: 4 });
+                game.lastEnemyShot = now;
+              }
+
+              game.enemies.forEach(enemy => {
+                if (game.timeFreezeActive) {
+                  ctx.fillStyle = '#6666ff';
+                  ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
+                  ctx.fillStyle = '#9999ff';
+                  ctx.fillRect(enemy.x + 5, enemy.y + 5, enemy.width - 10, enemy.height - 10);
+                } else {
+                  ctx.fillStyle = '#ff3366';
+                  ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
+                  ctx.fillStyle = '#ff6699';
+                  ctx.fillRect(enemy.x + 10, enemy.y + 10, enemy.width - 20, enemy.height - 20);
+                }
+              });
+
+              game.enemyBombs = game.enemyBombs.filter(bomb => {
+                bomb.y += bomb.speed;
+                ctx.fillStyle = '#ff0000';
+                ctx.fillRect(bomb.x, bomb.y, bomb.width, bomb.height);
+                return bomb.y < canvasSize.height;
+              });
+
+              game.powerUps = game.powerUps.filter(powerUp => {
+                powerUp.y += 2;
+                ctx.fillStyle = powerUp.color;
+                ctx.beginPath();
+                ctx.arc(powerUp.x, powerUp.y, 15, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 12px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(powerUp.label, powerUp.x, powerUp.y + 4);
+                return powerUp.y < canvasSize.height;
+              });
+
+              game.powerUps.forEach((powerUp, pIndex) => {
+                if (powerUp.x > game.player.x && powerUp.x < game.player.x + game.player.width && powerUp.y > game.player.y && powerUp.y < game.player.y + game.player.height) {
+                  game.powerUps.splice(pIndex, 1);
+                  game.activePowerUp = powerUp.type;
+                  game.powerUpEndTime = now + 10000;
+                  if (powerUp.type === 'speed') game.player.speed = 10;
+                }
+              });
+
+              game.bullets.forEach((bullet, bIndex) => {
+                game.enemies.forEach((enemy, eIndex) => {
+                  if (bullet.x < enemy.x + enemy.width && bullet.x + bullet.width > enemy.x && bullet.y < enemy.y + enemy.height && bullet.y + bullet.height > enemy.y) {
+                    if (bullet.type === 'piercing') {
+                    } else if (bullet.type === 'big' && bullet.hits > 0) {
+                      bullet.hits--;
+                      if (bullet.hits === 0) game.bullets.splice(bIndex, 1);
+                    } else if (bullet.type === 'bounce') {
+                      game.bullets.splice(bIndex, 1);
+                    } else {
+                      game.bullets.splice(bIndex, 1);
+                    }
+                    
+                    game.enemies.splice(eIndex, 1);
+                    setScore(s => s + 10);
+                    
+                    if (Math.random() < 0.15) {
+                      const powerUpTypes = [
+                        { type: 'triple', color: '#00ff00', label: '3X' },
+                        { type: 'big', color: '#ff00ff', label: 'BIG' },
+                        { type: 'bounce', color: '#00ffff', label: 'BNC' },
+                        { type: 'speed', color: '#ffaa00', label: 'SPD' }
+                      ];
+                      const powerUp = powerUpTypes[Math.floor(Math.random() * powerUpTypes.length)];
+                      game.powerUps.push({ x: enemy.x + enemy.width / 2, y: enemy.y, ...powerUp });
+                    }
+                  }
+                });
+              });
+
+              game.enemyBombs.forEach((bomb, bIndex) => {
+                if (bomb.x < game.player.x + game.player.width && bomb.x + bomb.width > game.player.x && bomb.y < game.player.y + game.player.height && bomb.y + bomb.height > game.player.y) {
+                  game.enemyBombs.splice(bIndex, 1);
+                  setHealth(h => {
+                    const newHealth = h - 10;
+                    if (newHealth <= 0) setGameState('gameover');
+                    return Math.max(0, newHealth);
+                  });
+                }
+              });
+
+              if (game.enemies.length === 0 && !game.waveCleared) {
+                game.waveCleared = true;
+                game.wave++;
+                setLevel(l => l + 1);
+                setTimeout(() => { game.waveCleared = false; createEnemyWave(); }, 1500);
+              }
+
+              game.enemies.forEach(enemy => {
+                if (enemy.y + enemy.height >= game.player.y) setGameState('gameover');
+              });
+            };
+
+            const intervalId = setInterval(gameLoop, 1000 / 60);
+            return () => {
+              clearInterval(intervalId);
+              window.removeEventListener('keydown', handleKeyDown);
+              window.removeEventListener('keyup', handleKeyUp);
+            };
+          }, [gameState, inventory, canvasSize]);
+
+          const startGame = () => {
+            if (!playerName.trim()) { alert('Wpisz swoje imię!'); return; }
+            setGameState('playing');
+            setScore(0);
+            setLevel(1);
+            setHealth(100);
+            gameRef.current = {
+              player: { x: canvasSize.width / 2 - 25, y: canvasSize.height - 80, width: 50, height: 40, speed: 5 },
+              bullets: [], enemies: [], enemyBombs: [], powerUps: [], wave: 0, keys: {},
+              lastShot: 0, lastEnemyShot: 0, waveCleared: false, activePowerUp: null, powerUpEndTime: 0,
+              flamethrowerCooldown: 0, timeFreezeActive: false, timeFreezeEnd: 0, piercingActive: false,
+              piercingEnd: 0, helpersActive: false, helpersEnd: 0, lastHelperShot: 0,
+              touchControls: { left: false, right: false, shoot: false }
+            };
+          };
+
+          const openShop = () => {
+            setTotalPoints(prev => prev + score);
+            setGameState('shop');
+          };
+
+          const buyItem = (item, cost) => {
+            if (totalPoints >= cost) {
+              setTotalPoints(prev => prev - cost);
+              setInventory(prev => ({ ...prev, [item]: prev[item] + 1 }));
+            }
+          };
+
+          const activateSuperPower = (type) => {
+            const game = gameRef.current;
+            const now = Date.now();
+            setInventory(inv => {
+              if (inv[type] > 0) {
+                if (type === 'timeFreeze') { game.timeFreezeActive = true; game.timeFreezeEnd = now + 10000; }
+                else if (type === 'piercing') { game.piercingActive = true; game.piercingEnd = now + 15000; }
+                else if (type === 'helpers') { game.helpersActive = true; game.helpersEnd = now + 20000; }
+                return { ...inv, [type]: inv[type] - 1 };
+              }
+              return inv;
+            });
+          };
+
+          const cooldownPercent = () => {
+            const now = Date.now();
+            const remaining = Math.max(0, gameRef.current.flamethrowerCooldown - now);
+            return Math.max(0, (1 - remaining / 15000) * 100);
+          };
+
+          const handleTouchButton = (button, isPressed) => {
+            gameRef.current.touchControls[button] = isPressed;
+          };
+
+          return (
+            <div className="game-container flex flex-col items-center justify-center min-h-screen bg-gray-900 p-2">
+              <div className="mb-2 flex gap-2 sm:gap-6 items-center text-white text-sm sm:text-xl font-bold flex-wrap justify-center">
+                <div>Punkty: {score}</div>
+                <div>Poziom: {level}</div>
+                <div className="flex items-center gap-2">
+                  <span>Życie:</span>
+                  <div className="w-24 sm:w-48 h-4 sm:h-6 bg-gray-700 border-2 border-white rounded overflow-hidden">
+                    <div className="h-full transition-all duration-300" style={{ width: `${health}%`, backgroundColor: health > 60 ? '#00ff00' : health > 30 ? '#ffaa00' : '#ff0000' }} />
+                  </div>
+                  <span className="hidden sm:inline">{health}%</span>
+                </div>
+              </div>
+              
+              {gameState === 'playing' && (
+                <>
+                  <div className="mb-1 flex gap-2 text-white text-xs sm:text-sm flex-wrap justify-center">
+                    <div>🔥: {inventory.flamethrower}</div>
+                    <div>❄️: {inventory.timeFreeze}</div>
+                    <div>⚡: {inventory.piercing}</div>
+                    <div>🤝: {inventory.helpers}</div>
+                  </div>
+                  {gameRef.current.flamethrowerCooldown > Date.now() && (
+                    <div className="mb-1 w-32 sm:w-48">
+                      <div className="w-full h-2 sm:h-4 bg-gray-700 border border-cyan-400 rounded overflow-hidden">
+                        <div className="h-full bg-cyan-500 transition-all" style={{ width: `${cooldownPercent()}%` }} />
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+              
+              <div className="relative">
+                <canvas ref={canvasRef} width={canvasSize.width} height={canvasSize.height} className="border-2 sm:border-4 border-cyan-500 rounded-lg touch-none" />
+                
+                {gameState === 'menu' && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-80 rounded-lg">
+                    <div className="text-center p-4">
+                      <h1 className="text-3xl sm:text-5xl font-bold text-cyan-400 mb-4 sm:mb-6 animate-pulse-slow">SPACE SHOOTER</h1>
+                      <div className="mb-4 sm:mb-6">
+                        <label className="text-white text-base sm:text-lg block mb-2">Wpisz swoje imię:</label>
+                        <input type="text" value={playerName} onChange={(e) => setPlayerName(e.target.value)} maxLength={15}
+                          className="px-3 py-2 text-base sm:text-lg rounded border-2 border-cyan-400 bg-gray-800 text-white w-48" placeholder="Twoje imię" />
+                      </div>
+                      <p className="text-white text-xs sm:text-sm mb-4">Używaj przycisków na dole ekranu do sterowania!</p>
+                      <button onClick={startGame} className="bg-cyan-500 hover:bg-cyan-600 text-white font-bold py-2 sm:py-3 px-6 sm:px-8 rounded-lg text-lg sm:text-xl">START GRY</button>
+                    </div>
+                  </div>
+                )}
+                
+                {gameState === 'shop' && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-90 rounded-lg overflow-y-auto">
+                    <div className="text-center p-3 sm:p-6 max-w-2xl">
+                      <h1 className="text-2xl sm:text-4xl font-bold text-yellow-400 mb-2">💰 SKLEP 💰</h1>
+                      <p className="text-white text-lg sm:text-2xl mb-3 sm:mb-6">Punkty: {totalPoints}</p>
+                      <div className="grid grid-cols-2 gap-2 sm:gap-4 mb-4 sm:mb-6">
+                        <div className="bg-gray-800 p-2 sm:p-4 rounded-lg border-2 border-red-500">
+                          <div className="text-2xl sm:text-4xl mb-1 sm:mb-2">🔥</div>
+                          <h3 className="text-sm sm:text-xl font-bold text-red-400 mb-1 sm:mb-2">Miotacz</h3>
+                          <p className="text-white text-xs mb-1 sm:mb-2 hidden sm:block">Niszczy całą falę!</p>
+                          <p className="text-yellow-300 text-xs sm:text-base mb-1 sm:mb-2">500 pkt</p>
+                          <p className="text-gray-400 text-xs mb-2">Masz: {inventory.flamethrower}</p>
+                          <button onClick={() => buyItem('flamethrower', 500)} disabled={totalPoints < 500}
+                            className="bg-red-500 hover:bg-red-600 disabled:bg-gray-600 text-white font-bold py-1 sm:py-2 px-2 sm:px-4 rounded text-xs sm:text-base">KUP</button>
+                        </div>
+                        <div className="bg-gray-800 p-2 sm:p-4 rounded-lg border-2 border-blue-500">
+                          <div className="text-2xl sm:text-4xl mb-1 sm:mb-2">❄️</div>
+                          <h3 className="text-sm sm:text-xl font-bold text-blue-400 mb-1 sm:mb-2">Zamrożenie</h3>
+                          <p className="text-white text-xs mb-1 sm:mb-2 hidden sm:block">Zatrzymuje wrogów</p>
+                          <p className="text-yellow-300 text-xs sm:text-base mb-1 sm:mb-2">300 pkt</p>
+                          <p className="text-gray-400 text-xs mb-2">Masz: {inventory.timeFreeze}</p>
+                          <button onClick={() => buyItem('timeFreeze', 300)} disabled={totalPoints < 300}
+                            className="bg-blue-500 hover:bg-blue-600 disabled:bg-gray-600 text-white font-bold py-1 sm:py-2 px-2 sm:px-4 rounded text-xs sm:text-base">KUP</button>
+                        </div>
+                        <div className="bg-gray-800 p-2 sm:p-4 rounded-lg border-2 border-yellow-500">
+                          <div className="text-2xl sm:text-4xl mb-1 sm:mb-2">⚡</div>
+                          <h3 className="text-sm sm:text-xl font-bold text-yellow-400 mb-1 sm:mb-2">Działo</h3>
+                          <p className="text-white text-xs mb-1 sm:mb-2 hidden sm:block">Potrójne pociski</p>
+                          <p className="text-yellow-300 text-xs sm:text-base mb-1 sm:mb-2">400 pkt</p>
+                          <p className="text-gray-400 text-xs mb-2">Masz: {inventory.piercing}</p>
+                          <button onClick={() => buyItem('piercing', 400)} disabled={totalPoints < 400}
+                            className="bg-yellow-500 hover:bg-yellow-600 disabled:bg-gray-600 text-white font-bold py-1 sm:py-2 px-2 sm:px-4 rounded text-xs sm:text-base">KUP</button>
+                        </div>
+                        <div className="bg-gray-800 p-2 sm:p-4 rounded-lg border-2 border-green-500">
+                          <div className="text-2xl sm:text-4xl mb-1 sm:mb-2">🤝</div>
+                          <h3 className="text-sm sm:text-xl font-bold text-green-400 mb-1 sm:mb-2">Pomocnicy</h3>
+                          <p className="text-white text-xs mb-1 sm:mb-2 hidden sm:block">2 statki pomocnicze</p>
+                          <p className="text-yellow-300 text-xs sm:text-base mb-1 sm:mb-2">600 pkt</p>
+                          <p className="text-gray-400 text-xs mb-2">Masz: {inventory.helpers}</p>
+                          <button onClick={() => buyItem('helpers', 600)} disabled={totalPoints < 600}
+                            className="bg-green-500 hover:bg-green-600 disabled:bg-gray-600 text-white font-bold py-1 sm:py-2 px-2 sm:px-4 rounded text-xs sm:text-base">KUP</button>
+                        </div>
+                      </div>
+                      <button onClick={startGame} className="bg-cyan-500 hover:bg-cyan-600 text-white font-bold py-2 sm:py-3 px-6 sm:px-8 rounded-lg text-base sm:text-xl">WRÓĆ DO GRY</button>
+                    </div>
+                  </div>
+                )}
+                
+                {gameState === 'gameover' && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-90 rounded-lg">
+                    <div className="text-center p-4">
+                      <h1 className="text-3xl sm:text-5xl font-bold text-red-400 mb-4">KONIEC GRY</h1>
+                      <p className="text-white text-2xl sm:text-3xl mb-2 font-bold">{playerName}</p>
+                      <p className="text-yellow-300 text-xl sm:text-2xl mb-2">Wynik: {score}</p>
+                      <p className="text-cyan-300 text-lg sm:text-xl mb-4 sm:mb-6">Poziom: {level}</p>
+                      <div className="flex flex-col sm:flex-row gap-2 sm:gap-4 justify-center">
+                        <button onClick={openShop} className="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 sm:py-3 px-6 sm:px-8 rounded-lg text-base sm:text-xl">SKLEP</button>
+                        <button onClick={() => setGameState('menu')} className="bg-cyan-500 hover:bg-cyan-600 text-white font-bold py-2 sm:py-3 px-6 sm:px-8 rounded-lg text-base sm:text-xl">MENU</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+              
+              {gameState === 'playing' && (
+                <div className="mt-4 w-full max-w-2xl">
+                  <div className="flex gap-2 justify-center mb-3">
+                    <button
+                      onTouchStart={() => handleTouchButton('flamethrower', true)}
+                      onTouchEnd={() => handleTouchButton('flamethrower', false)}
+                      onMouseDown={() => handleTouchButton('flamethrower', true)}
+                      onMouseUp={() => handleTouchButton('flamethrower', false)}
+                      disabled={inventory.flamethrower === 0 || gameRef.current.flamethrowerCooldown > Date.now()}
+                      className="bg-red-600 hover:bg-red-700 disabled:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg text-sm active:scale-95 transition-transform touch-none"
+                    >
+                      🔥 Miotacz
+                    </button>
+                    <button
+                      onTouchStart={() => activateSuperPower('timeFreeze')}
+                      disabled={inventory.timeFreeze === 0 || gameRef.current.timeFreezeActive}
+                      className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg text-sm active:scale-95 transition-transform touch-none"
+                    >
+                      ❄️ Zamrożenie
+                    </button>
+                    <button
+                      onTouchStart={() => activateSuperPower('piercing')}
+                      disabled={inventory.piercing === 0 || gameRef.current.piercingActive}
+                      className="bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg text-sm active:scale-95 transition-transform touch-none"
+                    >
+                      ⚡ Działo
+                    </button>
+                    <button
+                      onTouchStart={() => activateSuperPower('helpers')}
+                      disabled={inventory.helpers === 0 || gameRef.current.helpersActive}
+                      className="bg-green-600 hover:bg-green-700 disabled:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg text-sm active:scale-95 transition-transform touch-none"
+                    >
+                      🤝 Pomocnicy
+                    </button>
+                  </div>
+                  
+                  <div className="flex justify-between items-center gap-4">
+                    <div className="flex gap-2">
+                      <button
+                        onTouchStart={() => handleTouchButton('left', true)}
+                        onTouchEnd={() => handleTouchButton('left', false)}
+                        onMouseDown={() => handleTouchButton('left', true)}
+                        onMouseUp={() => handleTouchButton('left', false)}
+                        className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-6 px-8 rounded-lg text-2xl active:scale-95 transition-transform touch-none"
+                      >
+                        ←
+                      </button>
+                      <button
+                        onTouchStart={() => handleTouchButton('right', true)}
+                        onTouchEnd={() => handleTouchButton('right', false)}
+                        onMouseDown={() => handleTouchButton('right', true)}
+                        onMouseUp={() => handleTouchButton('right', false)}
+                        className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-6 px-8 rounded-lg text-2xl active:scale-95 transition-transform touch-none"
+                      >
+                        →
+                      </button>
+                    </div>
+                    <button
+                      onTouchStart={() => handleTouchButton('shoot', true)}
+                      onTouchEnd={() => handleTouchButton('shoot', false)}
+                      onMouseDown={() => handleTouchButton('shoot', true)}
+                      onMouseUp={() => handleTouchButton('shoot', false)}
+                      className="bg-red-600 hover:bg-red-700 text-white font-bold py-6 px-12 rounded-lg text-2xl active:scale-95 transition-transform touch-none"
+                    >
+                      🔫 STRZAŁ
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        };
+
+        ReactDOM.render(<SpaceShooterGame />, document.getElementById('root'));
+    </script>
+</body>
+</html>
